@@ -8,10 +8,75 @@ terraform {
 }
 
 provider "aws" {
-  region = var.region
-  access_key = var.aws_access_key
-  secret_key = var.aws_secret_key
+  region     = var.region
+}
 
+resource "aws_s3_bucket" "logs" {
+  bucket = var.bucket_name
+
+  tags = {
+    Name = "${var.project_name}-s3-logs"
+  }
+}
+
+resource "aws_s3_bucket_ownership_controls" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  rule {
+    object_ownership = "BucketOwnerEnforced"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_iam_role" "ec2_role" {
+  name = "${var.project_name}-ec2-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = "sts:AssumeRole"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "ec2_s3_policy" {
+  name = "${var.project_name}-ec2-s3-policy"
+  role = aws_iam_role.ec2_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect = "Allow",
+        Action = [
+          "s3:ListBucket",
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        Resource = [
+          "arn:aws:s3:::${aws_s3_bucket.logs.bucket}",
+          "arn:aws:s3:::${aws_s3_bucket.logs.bucket}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "${var.project_name}-ec2-profile"
+  role = aws_iam_role.ec2_role.name
 }
 
 data "aws_ami" "amazon_linux_2" {
@@ -23,34 +88,6 @@ data "aws_ami" "amazon_linux_2" {
     values = ["amzn2-ami-hvm-*-x86_64-gp2"]
   }
 }
-
-resource "aws_iam_role" "ec2_role" {
-  name = "${var.project_name}-ec2-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
-      Principal = {
-        Service = "ec2.amazonaws.com"
-      }
-    }]
-  })
-}
-
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "${var.project_name}-ec2-profile"
-  role = aws_iam_role.ec2_role.name
-}
-
-resource "aws_s3_bucket" "logs" {
-  bucket = "${var.project_name}-logs-bucket"
-  tags = {
-    Name = "${var.project_name}-logs"
-  }
-}
-
 
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -65,20 +102,28 @@ resource "aws_vpc" "main" {
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.public_subnet_cidr
+  availability_zone = var.az
   map_public_ip_on_launch = true
-  tags                    = { Name = "${var.project_name}-public-subnet" }
+  tags = {
+    Name = "${var.project_name}-public-subnet"
+  }
 }
 
 resource "aws_subnet" "private" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.private_subnet_cidr
+  availability_zone = var.az
   map_public_ip_on_launch = false
-  tags                    = { Name = "${var.project_name}-private-subnet" }
+  tags = {
+    Name = "${var.project_name}-private-subnet"
+  }
 }
 
 resource "aws_internet_gateway" "igw" {
   vpc_id = aws_vpc.main.id
-  tags   = { Name = "${var.project_name}-igw" }
+  tags = {
+    Name = "${var.project_name}-igw"
+  }
 }
 
 resource "aws_eip" "nat_eip" {
@@ -88,7 +133,9 @@ resource "aws_eip" "nat_eip" {
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat_eip.id
   subnet_id     = aws_subnet.public.id
-  tags          = { Name = "${var.project_name}-nat" }
+  tags = {
+    Name = "${var.project_name}-nat"
+  }
 }
 
 resource "aws_route_table" "public_rt" {
@@ -142,7 +189,6 @@ resource "aws_security_group" "public_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
 }
 
 resource "aws_security_group" "private_sg" {
@@ -156,11 +202,9 @@ resource "aws_security_group" "private_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-
 }
 
 resource "aws_security_group_rule" "private_ssh_from_public" {
-
   security_group_id        = aws_security_group.private_sg.id
   source_security_group_id = aws_security_group.public_sg.id
   type                     = "ingress"
@@ -180,14 +224,38 @@ resource "aws_instance" "public" {
 
   user_data = <<-EOF
                 #!/bin/bash
+                # Update all system packages
                 yum update -y
-                yum install -y nginx awscli
+
+                # Enable and install NGINX using Amazon Linux Extras
+                amazon-linux-extras enable nginx1
+                yum install -y nginx unzip
+
+                # Start and enable NGINX service
                 systemctl enable nginx
                 systemctl start nginx
+
+                # Create custom index.html file
                 echo "hello from harjeet first terraform public-ec2" > /usr/share/nginx/html/index.html
-                aws s3 cp /usr/share/nginx/html/index.html s3://${aws_s3_bucket.logs.bucket}/public-test.html
+
+                # Install AWS CLI v2 (official method)
+                curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+                unzip /tmp/awscliv2.zip -d /tmp
+                /tmp/aws/install
+
+                # Upload the file to S3 bucket
+                /usr/local/bin/aws s3 cp /usr/share/nginx/html/index.html s3://${aws_s3_bucket.logs.bucket}/public-test.html
+
+                # Restart NGINX to ensure everything is up
+                systemctl restart nginx
                 EOF
+
+  tags = {
+    Name = "${var.project_name}-public-ec2"
+  }
 }
+
+
 
 resource "aws_instance" "private" {
   ami                         = data.aws_ami.amazon_linux_2.id
@@ -203,7 +271,10 @@ resource "aws_instance" "private" {
                 yum update -y
                 yum install -y python3 awscli
                 echo "private EC2 internet working" > /tmp/private.log
-                aws s3 cp /tmp/private.log s3://${var.bucket_name}/private.log
+                aws s3 cp /tmp/private.log s3://${aws_s3_bucket.logs.bucket}/private.log
                 EOF
 
+    tags = {
+      Name = "${var.project_name}-private-ec2" 
+   }
 }
