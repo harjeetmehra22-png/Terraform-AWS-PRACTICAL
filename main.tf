@@ -224,29 +224,28 @@ resource "aws_instance" "public" {
 
   user_data = <<-EOF
                 #!/bin/bash
-                # Update all system packages
+                
                 yum update -y
 
-                # Enable and install NGINX using Amazon Linux Extras
+              
                 amazon-linux-extras enable nginx1
                 yum install -y nginx unzip
 
-                # Start and enable NGINX service
+              
                 systemctl enable nginx
                 systemctl start nginx
 
-                # Create custom index.html file
+
                 echo "hello from harjeet first terraform public-ec2" > /usr/share/nginx/html/index.html
 
-                # Install AWS CLI v2 (official method)
+                
                 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
                 unzip /tmp/awscliv2.zip -d /tmp
                 /tmp/aws/install
 
-                # Upload the file to S3 bucket
+                
                 /usr/local/bin/aws s3 cp /usr/share/nginx/html/index.html s3://${aws_s3_bucket.logs.bucket}/public-test.html
 
-                # Restart NGINX to ensure everything is up
                 systemctl restart nginx
                 EOF
 
