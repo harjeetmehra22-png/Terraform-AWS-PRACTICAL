@@ -2,5 +2,4 @@ region      = "abc-xyz-1"
 az          = "abc-xyz-1a"
 key_name    = "xyz-vpc"
 bucket_name = "xyz-logs-harjeet"
-aws_access_key = "xyz-dummy-access-key"
-aws_secret_key = "xyz-dummy-secret-key"
+
